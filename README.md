@@ -2,6 +2,8 @@
 
 Real-time CLI dashboard for your Base USDc balance. Polls the Base public RPC directly — no API key, no account, completely free.
 
+It is built to track your OpenClaw+ClawRouter budget but has no dependencies on it and can be used to just track a wallet. 
+
 ![screenshot](screenshots/demo.png)
 
 ## Quick Start
@@ -22,12 +24,13 @@ The first run automatically creates a virtual environment and installs dependenc
 --interval      Poll interval in seconds    (default: 15, min: 5)
 -c              Enable colors               (default: plain black & white)
 --hide-wallet   Hide your wallet address from all output
+--debug         Show every poll event, even when nothing changes
 ```
 
 ## Examples
 
 ```bash
-# Plain black & white output
+# Plain black & white, quiet output (default)
 ./run.sh --wallet 0xYourAddress
 
 # Colored output with cyan headers and yellow/red balance alerts
@@ -36,9 +39,41 @@ The first run automatically creates a virtual environment and installs dependenc
 # Hide wallet address from output (useful for screen sharing)
 ./run.sh --wallet 0xYourAddress --hide-wallet
 
+# Show all poll activity for troubleshooting
+./run.sh --wallet 0xYourAddress --debug
+
 # All options combined
 ./run.sh --wallet 0xYourAddress -c --hide-wallet --interval 30
 ```
+
+## Output
+
+By default the monitor is quiet — it prints the balance once on startup, then only outputs a new line when something changes:
+
+```
+2026-02-24 00:08:56  starting up, fetching initial balance...
+2026-02-24 00:08:56  $1.676613 USDc  [WARNING]
+
+2026-02-24 00:42:11  balance changed  -0.250000 USDc
+2026-02-24 00:42:11  $1.426613 USDc  [WARNING]
+
+2026-02-24 00:42:11  new transfer detected:
+  Block       Tx Hash        From           ...
+```
+
+With `--debug` every poll is printed, including "unchanged" and "sleeping" messages.
+
+## Balance Alerts
+
+The balance line includes a status indicator based on the current amount:
+
+| Indicator    | Meaning                                  |
+|--------------|------------------------------------------|
+| *(none)*     | Balance is healthy (above $5.00 USDc)    |
+| `[WARNING]`  | Balance is low — below $5.00 USDc        |
+| `[CRITICAL]` | Balance is very low — below $1.00 USDc   |
+
+With `-c` enabled, `[WARNING]` is shown in yellow and `[CRITICAL]` in red. These thresholds reflect the balance available for OpenClaw microtransactions — if it drops too low, LLM calls may start failing.
 
 ## Requirements
 
