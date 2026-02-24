@@ -1,8 +1,6 @@
-# Base USDc Wallet Monitor (Built for ClawRouter on OpenClaw)
+# Base USDc Wallet Monitor
 
 Real-time CLI dashboard for your Base USDc balance. Polls the Base public RPC directly — no API key, no account, completely free.
-
-It is built to track your OpenClaw+ClawRouter budget but has no dependencies on it and can be used to just track a wallet. 
 
 ![screenshot](screenshots/demo.png)
 
