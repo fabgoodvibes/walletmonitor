@@ -7,9 +7,10 @@ Requirements:
     pip install rich requests
 
 Usage:
-    python wallet_monitor.py --wallet 0xYourAddress               # plain b&w (default)
+    python wallet_monitor.py --wallet 0xYourAddress               # plain b&w, quiet (default)
     python wallet_monitor.py --wallet 0xYourAddress -c            # colors on
     python wallet_monitor.py --wallet 0xYourAddress --hide-wallet # hide wallet address
+    python wallet_monitor.py --wallet 0xYourAddress --debug       # verbose poll info
 """
 
 import argparse
@@ -45,10 +46,10 @@ WARN_THRESHOLD = 5.0
 LOW_THRESHOLD  = 1.0
 MAX_BLOCKS     = 1000
 
-# Initialized in main() based on -c flag
 console     = None
 COLOR       = False
 HIDE_WALLET = False
+DEBUG       = False
 rpc_id      = 0
 
 
@@ -132,39 +133,42 @@ def short(addr: str) -> str:
     return f"{addr[:6]}...{addr[-4:]}" if len(addr) > 12 else addr
 
 def p(text: str):
-    """Plain print — bypasses rich markup entirely."""
+    """Plain print — no markup, no highlight."""
     console.print(text, markup=False, highlight=False)
+
+def pdebug(text: str):
+    """Print only when --debug is on."""
+    if not DEBUG:
+        return
+    if COLOR:
+        console.print(f"[dim]  [debug] {text}[/]", highlight=False)
+    else:
+        p(f"  [debug] {text}")
 
 
 # ── Print ─────────────────────────────────────────────────────────────────────
 
 def print_balance(balance: float):
     if balance <= LOW_THRESHOLD:
-        flag = "[CRITICAL]"
+        flag, style = "[CRITICAL]", "bold red"
     elif balance <= WARN_THRESHOLD:
-        flag = "[WARNING]"
+        flag, style = "[WARNING]", "bold yellow"
     else:
-        flag = ""
+        flag, style = "", None
 
-    if COLOR and flag:
-        style = "bold red" if balance <= LOW_THRESHOLD else "bold yellow"
-        console.print(
-            Text(f"  balance   ${balance:,.6f} USDc  {flag}", style=style),
-            markup=False, highlight=False,
-        )
+    line = f"{now()}  ${balance:,.6f} USDc  {flag}".rstrip()
+
+    if COLOR and style:
+        console.print(Text(line, style=style), markup=False, highlight=False)
     else:
-        p(f"  balance   ${balance:,.6f} USDc  {flag}".rstrip())
+        p(line)
 
 
 def print_transfers(transfers: list, wallet: str):
-    if not transfers:
-        p(f"  no transfers found in last {MAX_BLOCKS} blocks")
-        return
-
     wallet_lower = wallet.lower()
 
     table = Table(box=box.SIMPLE, show_header=True, padding=(0, 1),
-                  highlight=False, header_style="" )
+                  highlight=False, header_style="")
     table.add_column("Block",   width=10)
     table.add_column("Tx Hash", width=14)
     table.add_column("From",    width=14)
@@ -194,6 +198,7 @@ def print_transfers(transfers: list, wallet: str):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def run(wallet: str, interval: int):
+    # Header
     if COLOR:
         console.print(Rule("[bold cyan]Base USDc Wallet Monitor[/]", style="cyan"))
     else:
@@ -203,39 +208,68 @@ def run(wallet: str, interval: int):
     p(f"  rpc       {BASE_RPCS[0]}  (+ {len(BASE_RPCS)-1} fallbacks)")
     p(f"  token     USDc")
     p(f"  interval  {interval}s")
+    if DEBUG:
+        p(f"  debug     on")
     if COLOR:
         console.print(Rule(style="cyan dim"))
     else:
         p("--------------------------------")
 
-    poll_n = 0
+    poll_n       = 0
+    last_balance = None
+    last_tx_hash = None
+
+    # Print initial balance label once
+    p(f"\n{now()}  starting up, fetching initial balance...")
 
     while True:
         poll_n += 1
-        if COLOR:
-            console.print(f"\n[cyan]-- poll #{poll_n}  {now()} --[/]")
-        else:
-            p(f"\n-- poll #{poll_n}  {now()} --")
+        pdebug(f"poll #{poll_n}  {now()}")
 
+        # ── Balance
         balance, err = fetch_balance(wallet)
         if err:
-            p(f"  balance error: {err}")
+            p(f"{now()}  error: {err}")
         else:
-            print_balance(balance)
+            if last_balance is None:
+                # First reading — always print
+                print_balance(balance)
+                last_balance = balance
+            elif balance != last_balance:
+                # Balance changed — print new value
+                diff = balance - last_balance
+                sign = "+" if diff > 0 else ""
+                p(f"{now()}  balance changed  {sign}{diff:,.6f} USDc")
+                print_balance(balance)
+                last_balance = balance
+            else:
+                pdebug(f"balance unchanged  ${balance:,.6f} USDc")
 
+        # ── Transfers
         transfers, err = fetch_transfers(wallet)
         if err:
-            p(f"  transfers error: {err}")
+            p(f"{now()}  transfers error: {err}")
         else:
-            p(f"  transfers  ({len(transfers)} found in last {MAX_BLOCKS} blocks)")
-            print_transfers(transfers, wallet)
+            pdebug(f"{len(transfers)} transfer(s) found in last {MAX_BLOCKS} blocks")
+            if transfers:
+                newest_hash = transfers[0]["hash"]
+                if newest_hash != last_tx_hash:
+                    if last_tx_hash is not None:
+                        # New transfer appeared — print the table
+                        p(f"{now()}  new transfer detected:")
+                    print_transfers(transfers, wallet)
+                    last_tx_hash = newest_hash
+                else:
+                    pdebug("no new transfers")
+            else:
+                pdebug(f"no transfers in last {MAX_BLOCKS} blocks")
 
-        p(f"  next poll in {interval}s -- Ctrl-C to quit")
+        pdebug(f"sleeping {interval}s")
         time.sleep(interval)
 
 
 def main():
-    global COLOR, HIDE_WALLET, console
+    global COLOR, HIDE_WALLET, DEBUG, console
 
     parser = argparse.ArgumentParser(
         description="Base USDc wallet monitor via public Base RPC. No API key needed.",
@@ -246,13 +280,14 @@ def main():
                                          help="Enable colors (default: plain b&w)")
     parser.add_argument("--hide-wallet", dest="hide_wallet",   action="store_true", default=False,
                                          help="Don't print wallet address in output")
+    parser.add_argument("--debug",       dest="debug",         action="store_true", default=False,
+                                         help="Show poll activity even when nothing changes")
     args = parser.parse_args()
 
     COLOR       = args.color
     HIDE_WALLET = args.hide_wallet
+    DEBUG       = args.debug
 
-    # Key fix: when no color, create a Console with no_color=True which strips
-    # ALL rich styling including auto-highlighting of URLs, hex strings, etc.
     console = Console(no_color=not COLOR, highlight=False)
 
     if not args.wallet.startswith("0x") or len(args.wallet) != 42:
