@@ -94,19 +94,32 @@ def fetch_balance(wallet: str) -> tuple:
 def fetch_transfers(wallet: str) -> tuple:
     try:
         latest       = int(rpc("eth_blockNumber", [])["result"], 16)
-        to_block     = hex(max(0, latest - 2))   # stay 2 blocks behind head to avoid race
-        from_block   = hex(max(0, latest - MAX_BLOCKS))
         wallet_topic = "0x" + wallet[2:].lower().zfill(64)
 
-        incoming = rpc("eth_getLogs", [{"fromBlock": from_block, "toBlock": to_block,
-            "address": USDC_CONTRACT, "topics": [TRANSFER_TOPIC, None, wallet_topic]}])
-        outgoing = rpc("eth_getLogs", [{"fromBlock": from_block, "toBlock": to_block,
-            "address": USDC_CONTRACT, "topics": [TRANSFER_TOPIC, wallet_topic, None]}])
+        # Retry with increasing offset if node says block range exceeds head
+        for offset in [2, 5, 10, 20]:
+            to_block   = hex(max(0, latest - offset))
+            from_block = hex(max(0, latest - MAX_BLOCKS))
 
-        if "error" in incoming:
-            return [], incoming["error"].get("message", str(incoming["error"]))
-        if "error" in outgoing:
-            return [], outgoing["error"].get("message", str(outgoing["error"]))
+            incoming = rpc("eth_getLogs", [{"fromBlock": from_block, "toBlock": to_block,
+                "address": USDC_CONTRACT, "topics": [TRANSFER_TOPIC, None, wallet_topic]}])
+            outgoing = rpc("eth_getLogs", [{"fromBlock": from_block, "toBlock": to_block,
+                "address": USDC_CONTRACT, "topics": [TRANSFER_TOPIC, wallet_topic, None]}])
+
+            in_err  = incoming.get("error", {}).get("message", "")
+            out_err = outgoing.get("error", {}).get("message", "")
+
+            if "beyond current head" in in_err or "beyond current head" in out_err:
+                continue  # retry with larger offset
+
+            if "error" in incoming:
+                return [], incoming["error"].get("message", str(incoming["error"]))
+            if "error" in outgoing:
+                return [], outgoing["error"].get("message", str(outgoing["error"]))
+
+            break  # success
+        else:
+            return [], "block range error after retries"
 
         logs = incoming.get("result", []) + outgoing.get("result", [])
         transfers = []
