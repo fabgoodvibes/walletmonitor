@@ -94,8 +94,8 @@ def fetch_balance(wallet: str) -> tuple:
 def fetch_transfers(wallet: str) -> tuple:
     try:
         latest       = int(rpc("eth_blockNumber", [])["result"], 16)
+        to_block     = hex(max(0, latest - 2))   # stay 2 blocks behind head to avoid race
         from_block   = hex(max(0, latest - MAX_BLOCKS))
-        to_block     = hex(latest)
         wallet_topic = "0x" + wallet[2:].lower().zfill(64)
 
         incoming = rpc("eth_getLogs", [{"fromBlock": from_block, "toBlock": to_block,
