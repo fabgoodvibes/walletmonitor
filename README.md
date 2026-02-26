@@ -15,6 +15,17 @@ chmod +x run.sh
 
 The first run automatically creates a virtual environment and installs dependencies. Every subsequent run launches instantly.
 
+
+Add your wallet PUBLIC key as an env var and an alias in your '~/.bash_aliases' for easy recalling
+
+```bash
+
+echo "export x402_PUB_KEY=your_wallet_PUBLIC_key_here" >> ~/.bashrc
+echo "alias wm='~/code/walletmonitor/run.sh --wallet ${x402_PUB_KEY} -c'" >> ~/.bash_aliases
+source ~/.bashrc
+source ~/.bash_aliases
+```
+
 ## Options
 
 ```
