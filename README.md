@@ -21,7 +21,7 @@ Add your wallet PUBLIC key as an env var and an alias in your '~/.bash_aliases' 
 ```bash
 
 echo "export x402_PUB_KEY=your_wallet_PUBLIC_key_here" >> ~/.bashrc
-echo "alias wm='~/code/walletmonitor/run.sh --wallet ${x402_PUB_KEY} -c'" >> ~/.bash_aliases
+echo 'alias wm="~/code/walletmonitor/run.sh --wallet ${x402_PUB_KEY} -c"' >> ~/.bash_aliases
 source ~/.bashrc
 source ~/.bash_aliases
 ```
