@@ -34,9 +34,9 @@ except ImportError:
 
 BASE_RPCS = [
     "https://mainnet.base.org",
-    "https://base.llamarpc.com",
     "https://base-rpc.publicnode.com",
     "https://1rpc.io/base",
+    "https://base.llamarpc.com",
 ]
 
 USDC_CONTRACT  = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
@@ -68,11 +68,18 @@ def rpc(method: str, params: list) -> dict:
                 "params":  params,
             }, timeout=10)
             r.raise_for_status()
-            return r.json()
+            data = r.json()
+            # Also rotate on JSON-RPC errors so fallback nodes are tried
+            if "error" in data:
+                last_err = data["error"].get("message", str(data["error"]))
+                pdebug(f"RPC {url} returned error: {last_err}, trying next node")
+                continue
+            return data
         except Exception as e:
             last_err = e
             continue
-    raise Exception(f"All RPCs failed. Last error: {last_err}")
+    # All nodes failed — return the last error response so caller can handle it
+    return {"error": {"message": str(last_err)}}
 
 
 def fetch_balance(wallet: str) -> tuple:
@@ -98,8 +105,12 @@ def fetch_transfers(wallet: str) -> tuple:
 
         # Retry with increasing offset if node says block range exceeds head
         for offset in [2, 5, 10, 20]:
-            to_block   = hex(max(0, latest - offset))
-            from_block = hex(max(0, latest - MAX_BLOCKS))
+            to_int     = max(0, latest - offset)
+            from_int   = max(0, to_int - MAX_BLOCKS)
+            to_block   = hex(to_int)
+            from_block = hex(from_int)
+
+            pdebug(f"getLogs attempt offset={offset} from={from_int}({from_block}) to={to_int}({to_block})")
 
             incoming = rpc("eth_getLogs", [{"fromBlock": from_block, "toBlock": to_block,
                 "address": USDC_CONTRACT, "topics": [TRANSFER_TOPIC, None, wallet_topic]}])
@@ -109,7 +120,9 @@ def fetch_transfers(wallet: str) -> tuple:
             in_err  = incoming.get("error", {}).get("message", "")
             out_err = outgoing.get("error", {}).get("message", "")
 
-            if "beyond current head" in in_err or "beyond current head" in out_err:
+            pdebug(f"getLogs in_err={repr(in_err)} out_err={repr(out_err)}")
+
+            if any(e in in_err + out_err for e in ["beyond current head", "invalid block range"]):
                 continue  # retry with larger offset
 
             if "error" in incoming:
@@ -119,7 +132,7 @@ def fetch_transfers(wallet: str) -> tuple:
 
             break  # success
         else:
-            return [], "block range error after retries"
+            return [], "block range error after retries — node may be syncing"
 
         logs = incoming.get("result", []) + outgoing.get("result", [])
         transfers = []
