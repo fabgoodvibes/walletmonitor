@@ -50,7 +50,8 @@ console     = None
 COLOR       = False
 HIDE_WALLET = False
 DEBUG       = False
-rpc_id      = 0
+rpc_id          = 0
+block_ts_cache  = {}  # block_number -> datetime str, avoids repeat calls
 
 
 # ── RPC ───────────────────────────────────────────────────────────────────────
@@ -145,9 +146,25 @@ def fetch_transfers(wallet: str) -> tuple:
                 "amount":      int(log["data"], 16) / 10 ** USDC_DECIMALS,
             })
         transfers.sort(key=lambda x: x["blockNumber"], reverse=True)
-        return transfers[:10], ""
+        return transfers[:50], ""
     except Exception as e:
         return [], str(e)
+
+
+# ── Block timestamp ──────────────────────────────────────────────────────────
+
+def block_timestamp(block_number: int) -> str:
+    """Return human-readable timestamp for a block, cached to avoid repeat RPC calls."""
+    if block_number in block_ts_cache:
+        return block_ts_cache[block_number]
+    try:
+        result = rpc("eth_getBlockByNumber", [hex(block_number), False])
+        ts = int(result["result"]["timestamp"], 16)
+        formatted = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        formatted = now()  # fallback to current time on error
+    block_ts_cache[block_number] = formatted
+    return formatted
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -190,35 +207,14 @@ def print_balance(balance: float):
         p(line)
 
 
-def print_transfers(transfers: list, wallet: str):
+def print_transfer_line(tx: dict, wallet: str, balance: float):
+    """Print a single transfer as one log line."""
     wallet_lower = wallet.lower()
-
-    table = Table(box=box.SIMPLE, show_header=True, padding=(0, 1),
-                  highlight=False, header_style="")
-    table.add_column("Block",   width=10)
-    table.add_column("Tx Hash", width=14)
-    table.add_column("From",    width=14)
-    table.add_column("",        width=2, justify="center")
-    table.add_column("To",      width=14)
-    table.add_column("Amount",  justify="right")
-
-    for tx in transfers:
-        is_in = tx["to"].lower() == wallet_lower
-        if COLOR:
-            arrow = Text("<-" if is_in else "->", style="bold green" if is_in else "bold red")
-            amt_t = Text(f"{tx['amount']:,.4f} USDc", style="bold green" if is_in else "bold red")
-        else:
-            arrow = Text("<-" if is_in else "->")
-            amt_t = Text(f"{tx['amount']:,.4f} USDc")
-        table.add_row(
-            str(tx["blockNumber"]),
-            short(tx["hash"]),
-            short(tx["from"]),
-            arrow,
-            short(tx["to"]),
-            amt_t,
-        )
-    console.print(table, highlight=False)
+    is_in  = tx["to"].lower() == wallet_lower
+    sign   = "+" if is_in else "-"
+    line   = (f"{block_timestamp(tx['blockNumber'])}  block:{tx['blockNumber']}  "
+              f"{sign}{tx['amount']:,.4f} USDc  |  Balance ${balance:,.6f}")
+    p(line)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -243,7 +239,7 @@ def run(wallet: str, interval: int):
 
     poll_n       = 0
     last_balance = None
-    last_tx_hash = None
+    seen_hashes  = set()
 
     # Print initial balance label once
     p(f"\n{now()}  starting up, fetching initial balance...")
@@ -262,11 +258,7 @@ def run(wallet: str, interval: int):
                 print_balance(balance)
                 last_balance = balance
             elif balance != last_balance:
-                # Balance changed — print new value
-                diff = balance - last_balance
-                sign = "+" if diff > 0 else ""
-                p(f"{now()}  balance changed  {sign}{diff:,.6f} USDc")
-                print_balance(balance)
+                # Balance changed — only print standalone line if no transfers caught it
                 last_balance = balance
             else:
                 pdebug(f"balance unchanged  ${balance:,.6f} USDc")
@@ -278,13 +270,30 @@ def run(wallet: str, interval: int):
         else:
             pdebug(f"{len(transfers)} transfer(s) found in last {MAX_BLOCKS} blocks")
             if transfers:
-                newest_hash = transfers[0]["hash"]
-                if newest_hash != last_tx_hash:
-                    if last_tx_hash is not None:
-                        # New transfer appeared — print the table
-                        p(f"{now()}  new transfer detected:")
-                    print_transfers(transfers, wallet)
-                    last_tx_hash = newest_hash
+                # Find transfers we have not printed yet
+                new_txs = [tx for tx in transfers if tx["hash"] not in seen_hashes]
+                if new_txs:
+                    # Calculate running balance at each transfer:
+                    # current balance already reflects all new txs, so work backwards
+                    # then replay oldest-to-newest to get balance after each one
+                    wallet_lower = wallet.lower()
+                    sorted_new = sorted(new_txs, key=lambda x: x["blockNumber"])
+                    total_signed = sum(
+                        tx["amount"] if tx["to"].lower() == wallet_lower else -tx["amount"]
+                        for tx in sorted_new
+                    )
+                    running = (balance if balance is not None else 0.0) - total_signed
+                    for tx in sorted_new:
+                        is_in   = tx["to"].lower() == wallet_lower
+                        signed  = tx["amount"] if is_in else -tx["amount"]
+                        running += signed
+                        print_transfer_line(tx, wallet, running)
+                        seen_hashes.add(tx["hash"])
+                    # Keep seen_hashes from growing forever — drop oldest beyond 200
+                    if len(seen_hashes) > 200:
+                        seen_hashes.clear()
+                        for tx in transfers:
+                            seen_hashes.add(tx["hash"])
                 else:
                     pdebug("no new transfers")
             else:
